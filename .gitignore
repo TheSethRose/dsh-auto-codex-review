@@ -1,0 +1,11 @@
+node_modules/
+lib/
+*.tgz
+.env
+.env.*
+!.env.example
+coverage/
+.DS_Store
+task_plan.md
+findings.md
+progress.md

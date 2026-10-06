@@ -1,0 +1,17 @@
+dsh-auto-codex-review
+
+Derived from @deepseek-ai/dsh-experimental-auto-review 0.2.0-rc.2,
+DeepSeek Harness, Copyright (c) 2026 DeepSeek, licensed under MIT.
+
+Upstream: https://github.com/deepseek-ai/deepseek-harness
+Tag: dsh-v0.2.0-rc.2
+Commit: 639ed015397290b3745d163aafe02ffee4aa3f84
+Package: packages/experimental/auto-review
+
+The source baseline, README and license are preserved under upstream/ in
+the Git repository. The policy and snapshot/gate implementation are reused
+in src/index.js. This derivative replaces the original DSH LLM invocation
+with a fixed codex-auto-review CLI transport and adds fail-closed validation,
+final denials, cancellation handling and read-only unload behavior.
+
+The original MIT notice is retained in LICENSE.

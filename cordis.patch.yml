@@ -1,0 +1,7 @@
+- insert:
+    - id: auto-codex-review
+      name: ./lib/index.js
+      config:
+        codexPath: codex
+        timeoutMs: 120000
+        maxBytes: 2097152

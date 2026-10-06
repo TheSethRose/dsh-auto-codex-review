@@ -1,4 +1,4 @@
-import { BlockAssembler } from "@deepseek-ai/dsh-llm";
+import { reviewWithCodex, resolveConfig } from "./codex.js";
 import { deepFreeze } from "@deepseek-ai/dsh-util-values";
 import { AUTO_PRESET } from "@deepseek-ai/dsh-permission-presets";
 import { RUN_CODE_NAME } from "@deepseek-ai/dsh-tools";
@@ -7,10 +7,9 @@ import { RUN_CODE_NAME } from "@deepseek-ai/dsh-tools";
 * LLM-backed authorization gate for the current-session-only Auto permission
 * preset. Every native call and every started PTC inner call is reviewed once
 * before its body; the outer `run_code` transport is deliberately excluded.
-* Under the `ask` approval policy a reviewer denial asks the user; under
-* `never` it is final.
+* Reviewer denials are final under every approval policy.
 *
-* @module @deepseek-ai/dsh-experimental-auto-review
+* @module dsh-auto-codex-review
 */
 /** Structured error name persisted for every final reviewer denial. */
 const AUTO_REVIEW_DENIED_ERROR_NAME = "AutoReviewDeniedError";
@@ -40,11 +39,9 @@ Judge the pending action by what its tool and arguments will actually do. The ex
 
 For any allow, end with exactly the applicable two-member object and nothing else. In particular, when a medium action is allowed, the complete text must be exactly {"risk":"medium","decision":"allow"}. Do not add reason, explanation, labels, Markdown, or surrounding prose. Stop immediately after the closing brace.`;
 /** Cordis plugin name used by loader diagnostics. */
-const name = "experimental-auto-review";
+const name = "auto-codex-review";
 /** Complete host services required before Auto may be advertised. */
 const inject = [
-	"approval",
-	"llm",
 	"permissionPresets",
 	"sessions",
 	"tools"
@@ -209,7 +206,7 @@ function ptcAction(exec, start, visibleParentKeys) {
 * Freeze the five reviewer sections from one session and pending execution.
 * @param agent - agent whose durable surface and request header authorize the call.
 * @param exec - immutable pending execution.
-* @returns the exact route and four data sections paired with {@link REVIEW_POLICY}.
+* @returns four logged data sections paired with {@link REVIEW_POLICY}; the reviewer route is fixed independently.
 */
 function snapshotAutoReview(agent, exec) {
 	const { session } = agent;
@@ -310,8 +307,6 @@ function snapshotAutoReview(agent, exec) {
 	if (!passedCurrentRoot) throw new Error("auto-review: the pending root call is missing from the current surface");
 	const action = exec.parent === void 0 ? nativeAction(exec, header.tools, currentRootCall) : ptcAction(exec, currentPtcStart, visibleParentKeys);
 	return deepFreeze({
-		provider: header.config.provider,
-		model: header.config.model,
 		cwd,
 		projectInstructions,
 		history,
@@ -351,7 +346,8 @@ function topLevelMemberCount(text) {
 }
 /** Parse the closed risk/decision protocol and its fixed safety combinations. */
 function parseDecision(text) {
-	const value = JSON.parse(text);
+	let value;
+	try { value = JSON.parse(text); } catch { throw new Error("auto-review: malformed decision JSON"); }
 	if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("auto-review: reviewer output must be one JSON object");
 	const record = value;
 	const keys = Object.keys(record);
@@ -373,46 +369,10 @@ function parseDecision(text) {
 	};
 	throw new Error("auto-review: reviewer output does not match the risk/decision protocol");
 }
-/** Consume zero or more reasoning blocks, one JSON text block, and one terminal stop. */
-async function readDecision(stream) {
-	const assembler = new BlockAssembler();
-	let finished = false;
-	for await (const chunk of stream) {
-		if (finished) throw new Error("auto-review: reviewer emitted data after its terminal finish");
-		assembler.push(chunk);
-		if (chunk.type === "finish") {
-			finished = true;
-			if (chunk.reason.kind === "error" || chunk.reason.kind === "aborted") {
-				const { code, message } = chunk.reason.failure;
-				throw new Error(`auto-review: reviewer ended with ${chunk.reason.kind} ${code}: ${message}`);
-			}
-			if (chunk.reason.kind !== "stop") throw new Error(`auto-review: reviewer ended with ${chunk.reason.kind}`);
-		}
-	}
-	if (!finished) throw new Error("auto-review: reviewer emitted no terminal finish");
-	const blocks = assembler.blocks();
-	const final = blocks.at(-1);
-	if (final?.type !== "text" || blocks.slice(0, -1).some((block) => block.type !== "reasoning")) throw new Error("auto-review: reviewer must emit zero or more reasoning blocks followed by exactly one text block");
-	return parseDecision(final.text);
-}
-/** Review one frozen pending action with the fixed policy and current LLM route. */
-async function classifyRisk(ctx, agent, exec, signal) {
-	const snapshot = snapshotAutoReview(agent, exec);
-	const options = deepFreeze({
-		provider: snapshot.provider,
-		model: snapshot.model,
-		system: REVIEW_POLICY,
-		messages: [{
-			role: "user",
-			content: [{
-				type: "text",
-				text: reviewUserText(snapshot)
-			}]
-		}],
-		temperature: 0,
-		signal
-	});
-	return readDecision(ctx.llm.stream(options));
+/** Review one frozen pending action with the dedicated fixed-model transport. */
+async function classifyRisk(config, agent, exec, signal) {
+  const snapshot = snapshotAutoReview(agent, exec);
+  return parseDecision(await reviewWithCodex({ policy: REVIEW_POLICY, prompt: reviewUserText(snapshot), signal, config }));
 }
 /** Materialize the fixed model-facing final Auto denial plus optional UI detail. */
 function denied(exec, reason) {
@@ -426,24 +386,6 @@ function denied(exec, reason) {
 		}
 	};
 }
-/**
-* Ask the user to decide one call the reviewer denied. The audited reason is
-* English; the prompt text is localized and keeps the reviewer's raw reason.
-*/
-function askUser(exec, reason) {
-	const denial = `Auto review denied tool "${exec.name}"`;
-	return {
-		kind: "ask",
-		reason: reason === void 0 ? denial : `${denial}: ${reason}`,
-		displayReason: reason === void 0 ? {
-			en: "Auto review denied this call.",
-			zh: "Auto review 拒绝了此调用。"
-		} : {
-			en: `Auto review denied this call: ${reason}`,
-			zh: `Auto review 拒绝了此调用：${reason}`
-		}
-	};
-}
 /** Materialize a reviewer failure as its own error rather than a denial. */
 function failed(exec, error) {
 	const message = error instanceof Error ? error.message : String(error);
@@ -453,7 +395,8 @@ function failed(exec, error) {
 	};
 }
 /** Install the Auto preset and its prepended per-call review gate. */
-function apply(ctx) {
+function apply(ctx, options = {}) {
+	const config = resolveConfig(options);
 	const permissionPresets = ctx.permissionPresets;
 	let accepting = true;
 	const active = /* @__PURE__ */ new Set();
@@ -467,21 +410,20 @@ function apply(ctx) {
 			const completed = Promise.withResolvers();
 			active.add(completed.promise);
 			try {
-				const review = await classifyRisk(ctx, agent, exec, AbortSignal.any([exec.signal, lifecycle.signal])).then((decision) => ({
+				const review = await classifyRisk(config, agent, exec, AbortSignal.any([exec.signal, lifecycle.signal])).then((decision) => ({
 					ok: true,
 					decision
 				}), (error) => ({
 					ok: false,
 					error
 				}));
-				if (isAborted(lifecycle.signal)) return { kind: "cancel" };
+				if (isAborted(lifecycle.signal) || exec.signal.aborted) return { kind: "cancel" };
 				if (!review.ok) return failed(exec, review.error);
 				const { decision } = review;
-				if (decision.decision === "deny" && ctx.approval.overrideOf(agent.session) === "never") return denied(exec, decision.reason);
+				if (decision.decision === "deny") return denied(exec, decision.reason);
 				const downstream = await next();
-				if (isAborted(lifecycle.signal)) return { kind: "cancel" };
-				if (decision.decision === "allow" || downstream.kind !== "allow") return downstream;
-				return askUser(exec, decision.reason);
+				if (isAborted(lifecycle.signal) || exec.signal.aborted) return { kind: "cancel" };
+				return downstream;
 			} finally {
 				active.delete(completed.promise);
 				completed.resolve();
@@ -495,7 +437,7 @@ function apply(ctx) {
 			try {
 				for (const session of ctx.sessions.list()) {
 					if (permissionPresets.current(session) !== AUTO_PRESET) continue;
-					permissionPresets.set(session, "danger-full-access");
+					permissionPresets.set(session, "read-only");
 				}
 			} finally {
 				lifecycle.abort(/* @__PURE__ */ new Error("auto-review integration disposed"));
@@ -505,4 +447,4 @@ function apply(ctx) {
 	}, "auto-review lifecycle");
 }
 //#endregion
-export { apply, inject, name };
+export { apply, inject, name, REVIEW_POLICY, parseDecision, snapshotAutoReview, reviewUserText };

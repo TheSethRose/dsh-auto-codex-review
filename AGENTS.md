@@ -15,7 +15,7 @@ Standalone ESM JavaScript fork of DSH Auto review. Preserve the upstream policy,
 
 ## Implementation
 
-`src/index.js` owns the Cordis gate and retained policy/snapshot code. `src/codex.js` owns config validation and isolated CLI lifecycle. `src/gateway.js` owns fixed request reconstruction and preventive SSE validation. Named plugin exports, no default export. Update source rather than generated `lib/`. Keep package.json and package-lock.json consistent.
+`client.js` is the hand-written Web companion that rewrites the two shipped `permission.access` Auto strings; it must stay guarded and reversible. `src/index.js` owns the Cordis gate and retained policy/snapshot code. `src/codex.js` owns config validation and isolated CLI lifecycle. `src/gateway.js` owns fixed request reconstruction and preventive SSE validation. Named plugin exports, no default export. Update source rather than generated `lib/`. Keep package.json and package-lock.json consistent.
 
 ## Security invariants
 

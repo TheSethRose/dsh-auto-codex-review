@@ -80,7 +80,8 @@ npm run test:live   # Opt-in: authenticated synthetic reviewer request
 - Classification can be wrong; there are no persistent grants, retries, or deterministic tool exemptions.
 - The private ChatGPT Responses endpoint, model availability, and Codex CLI flags can change. Unsupported changes fail closed.
 - PTC direct effects and out-of-process child permissions remain outside this plugin’s control.
-- The upstream synchronous Session reader and API compatibility assumptions are retained. Plugin-manager installation has not been exercised in a running DSH profile.
+- The upstream synchronous Session reader and API compatibility assumptions are retained. Installation was exercised as a `link:` dependency in a live profile; the plugin-manager UI path has not been exercised.
+- The permission picker's Auto entry and enable dialog use `permission.access` copy owned by the shipped `dsh-client-ui-permission-presets` client plugin, which still describes the built-in same-model reviewer. `client.js` rewrites those two strings at runtime and leaves the shipped copy untouched when the locale internals are not as expected.
 
 ## License and maintenance
 
